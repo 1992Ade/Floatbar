@@ -3,32 +3,44 @@
 <plist version="1.0">
 <dict>
     <!-- ======================================================================
-         Entitlements for TrollBox. The set is a straight port of what
-         Andromeda/Geranium ships (same signing path: `ldid -S<file>`
-         against an ad-hoc-signed Mach-O), with their app-specific pieces
-         (application-groups, Bookmark extension entitlements) stripped and
-         our screen-capture / QuartzCore additions kept.
+         2.0.4: entitlement set REDUCED to the known-working Andromeda
+         baseline. Our 2.0.0-2.0.3 set carried ~9 extra keys (keychain group
+         "apple", QuartzCore.*, cs.allow-jit, cs.allow-unsigned-executable-
+         memory, exception.mach-lookup.global-name, wifi.manager-access,
+         itunesstored.private, mobileinstall.allowedSPI). Diagnostic on the
+         user's SE1 / 15.8.8 showed setuid(0)=EPERM and rootSpawn=exit -1,
+         meaning TrollStore refused to apply CS_PLATFORM_BINARY. The most
+         likely cause is one of those extras being on TrollStore's
+         deny-list.
+
+         This file is a verbatim copy of Andromeda's entitlements.plist
+         minus the application-groups / icloud-container-identifiers keys
+         (those are specific to Andromeda's Bookmark share extension).
+         Once this build confirms rootSpawn works, the per-section extras
+         will be re-added one at a time to identify which one trips
+         TrollStore.
          ====================================================================== -->
 
-    <!-- Core TrollStore — makes us a platform binary (uid 0).
-         The pair (platform-application + no-container + no-sandbox) is
-         what TrollStore checks to decide whether to grant uid 0. -->
+    <!-- Core TrollStore — platformisation triplet.
+         ResolutionSetterSwift (haoict) ships ONLY these three keys and
+         they are sufficient for setuid(0) and persona_np. Everything
+         else below is additional access, not platformisation. -->
     <key>platform-application</key>
     <true/>
     <key>com.apple.private.security.no-container</key>
     <true/>
-    <key>com.apple.private.security.no-sandbox</key>
-    <true/>
     <key>com.apple.private.persona-mgmt</key>
+    <true/>
+
+    <key>com.apple.private.security.no-sandbox</key>
     <true/>
     <key>com.apple.private.security.container-manager</key>
     <true/>
     <key>com.apple.private.security.system-application</key>
     <true/>
 
-    <!-- IOKit user clients — note the NON-exception key form, same as
-         Andromeda. Without this CARenderServer can't allocate IOSurfaces
-         from our address space on some devices. -->
+    <!-- IOKit user clients — same array Andromeda ships. Needed for
+         IOSurface allocations the ClearShot capture path uses. -->
     <key>com.apple.security.iokit-user-client-class</key>
     <array>
         <string>AGXDeviceUserClient</string>
@@ -36,20 +48,20 @@
         <string>IOSurfaceRootUserClient</string>
     </array>
 
-    <!-- Filesystem: everything. We need /Library/ControlCenter/Bundles/
-         for ClearShot install, /var/containers/Shared/SystemGroup/ for
-         Supervise, and read access elsewhere for the Diagnostics screen. -->
+    <!-- Sandbox file exception on the whole filesystem — Andromeda's
+         pattern. This is a sandbox exception, not UNIX-level grant;
+         rootSpawn still handles the root-owned paths. -->
     <key>com.apple.security.exception.files.absolute-path.read-write</key>
     <array>
         <string>/</string>
     </array>
 
-    <!-- LocSim: lets CLSimulationManager feed fake coordinates to CoreLocation. -->
+    <!-- LocSim — lets CLSimulationManager drive fake coordinates. -->
     <key>com.apple.locationd.simulation</key>
     <true/>
 
-    <!-- Supervise: writing the CloudConfigurationDetails.plist touches
-         SystemConfiguration + MobileContainerManager data. -->
+    <!-- Supervise — SystemConfiguration + MobileContainerManager writes
+         needed to flip IsSupervised in the shared SystemGroup plist. -->
     <key>com.apple.SystemConfiguration.SCDynamicStore-write-access</key>
     <true/>
     <key>com.apple.private.MobileContainerManager.allowed</key>
@@ -75,51 +87,53 @@
     <key>com.apple.private.WebClips.read-write</key>
     <true/>
 
-    <!-- AppRepack: lets us talk to itunesstored via private SKUIItemStateCenter
-         to trigger a native iOS Store download for a specific version id
-         (= Muffinstore's mechanism — no credentials handled by us, iOS
-         reuses the user's active Apple ID session). -->
-    <key>com.apple.itunesstored.private</key>
-    <true/>
+    <!-- ======================================================================
+         REMOVED compared to 2.0.3, to isolate which one(s) trigger
+         TrollStore's refusal of CS_PLATFORM_BINARY:
 
-    <!-- Saved WiFi: read SSIDs and passwords from Apple's keychain group
-         (service "AirPort"). The apple group is what every SystemConfiguration
-         component uses; SecItemCopyMatching with kSecAttrService=AirPort
-         queries it when we belong to this group. -->
-    <key>keychain-access-groups</key>
-    <array>
-        <string>apple</string>
-        <string>com.apple.wifi</string>
-        <string>com.apple.identities</string>
-        <string>com.apple.certificates</string>
-    </array>
-    <key>com.apple.wifi.manager-access</key>
-    <true/>
-    <key>com.apple.private.mobileinstall.allowedSPI</key>
-    <array>
-        <string>UninstallForLaunchServices</string>
-        <string>SetCapabilities</string>
-        <string>Lookup</string>
-    </array>
+           com.apple.security.exception.mach-lookup.global-name
+             (CARenderServer / backboard / frontboard mach lookups —
+             ClearShot in-process capture will still resolve the symbol
+             via dlopen, but mach port access from within our app may
+             fail; needs re-test.)
 
-    <!-- CARenderServer reach for the in-app Test capture button. The CC
-         module itself inherits SpringBoard's own entitlements at runtime,
-         so these only matter inside the wrapper app. -->
-    <key>com.apple.security.exception.mach-lookup.global-name</key>
-    <array>
-        <string>com.apple.CARenderServer</string>
-        <string>com.apple.backboard.hid.services</string>
-        <string>com.apple.frontboard.systemappservices</string>
-    </array>
-    <key>com.apple.QuartzCore.secure-mode</key>
-    <true/>
-    <key>com.apple.QuartzCore.screen-access</key>
-    <true/>
+           com.apple.QuartzCore.secure-mode
+           com.apple.QuartzCore.screen-access
+             (QuartzCore privileged access — likely the biggest blocker
+             for ClearShot capture.)
 
-    <!-- CS exceptions (harmless to keep). -->
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
+           keychain-access-groups: ["apple", "com.apple.wifi",
+                                     "com.apple.identities",
+                                     "com.apple.certificates"]
+             (Primary suspect — claiming Apple's own keychain groups
+             is almost certainly on TrollStore's deny-list.)
+
+           com.apple.wifi.manager-access
+             (Saved WiFi reveal — won't work until this is re-added.)
+
+           com.apple.private.mobileinstall.allowedSPI
+             (Array with UninstallForLaunchServices / SetCapabilities /
+             Lookup — AppRepack SKUI* path may still work without it
+             since those are StoreKit UI, not mobile-install SPIs.)
+
+           com.apple.itunesstored.private
+             (AppRepack Store purchase — needed for versioned download,
+             to be re-added if it passes TrollStore.)
+
+           com.apple.security.cs.allow-jit
+           com.apple.security.cs.allow-unsigned-executable-memory
+             (macOS codesign exceptions that don't apply on iOS. Harmless
+             but might trigger TrollStore's "unknown entitlement" check.)
+
+         Sections affected until these come back:
+           - Saved WiFi (reveal passwords): broken until keychain group is
+             sorted — likely needs a different approach, not just the
+             Apple group claim.
+           - ClearShot in-process capture: CARenderServer symbol still
+             resolves, mach port may still work — to verify after this
+             build runs.
+           - AppRepack Store path: itunesstored.private removed, should
+             re-add once we know TrollStore accepts it.
+         ====================================================================== -->
 </dict>
 </plist>

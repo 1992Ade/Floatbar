@@ -73,6 +73,31 @@ jobs:
             --templates  MYbloXX/Templates \
             --output-dir dist/mobileconfigs
 
+      - name: CMS-sign the mobileconfigs so iOS recognizes them as profiles
+        run: |
+          # MYbloXX ships every .mobileconfig as a CMS/PKCS#7-signed blob
+          # (XML plist wrapped inside a DER signature). iOS Files/Safari
+          # detect the PKCS#7 magic bytes and route the file to Settings
+          # Profile Downloaded; an unsigned XML plist is classified as
+          # text/xml by QuickLook and opens in a text preview instead.
+          # A self-signed cert is enough — iOS shows "Not Verified" in
+          # the install dialog but the flow works.
+          openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -keyout /tmp/signer.key \
+            -out /tmp/signer.crt \
+            -subj "/CN=TrollBox Signer/O=TrollBox"
+          for f in dist/mobileconfigs/*.mobileconfig; do
+            openssl smime -sign -nodetach \
+              -signer /tmp/signer.crt \
+              -inkey  /tmp/signer.key \
+              -in     "$f" \
+              -out    "$f.signed" \
+              -outform DER
+            mv "$f.signed" "$f"
+            echo "[signed] $(basename $f) → $(stat -c%s $f) bytes"
+          done
+          rm -f /tmp/signer.key /tmp/signer.crt
+
       # ----- Build .tipa --------------------------------------------------
       # Copy the merged PACs + templates into MYbloXX/ too so the Makefile's
       # after-stage can embed them (it looks under MYbloXX/PAC/ and

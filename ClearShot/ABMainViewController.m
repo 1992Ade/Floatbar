@@ -278,6 +278,30 @@ static NSString *ABSandboxPACPath(NSString *baseName) {
     return @"MYbloXX.pac";
 }
 
+// Maps toggles → the matching pre-signed .mobileconfig name on GitHub
+// Releases. Parallel to pickedPACBaseName — 4 PACs × 2 OTA variants = 8
+// mobileconfigs, same set the Python generator builds.
+- (NSString *)pickedReleaseMobileconfigName {
+    BOOL noFB  = self.noFBSwitch.on;
+    BOOL noXXX = self.noXXXSwitch.on;
+    BOOL noOTA = self.noOTASwitch.on;
+    NSString *flavor;
+    if      (noFB && noXXX) flavor = @"noFBnoXXX";
+    else if (noFB)          flavor = @"noFB";
+    else if (noXXX)         flavor = @"noXXX";
+    else                    flavor = @"Standard";
+    NSString *suffix = noOTA ? @"-noOTA" : @"";
+    return [NSString stringWithFormat:@"TrollBoxAdBlock-%@%@.mobileconfig",
+            flavor, suffix];
+}
+
+- (NSURL *)pickedReleaseMobileconfigURL {
+    NSString *name = [self pickedReleaseMobileconfigName];
+    NSString *urlStr = [NSString stringWithFormat:
+        @"https://github.com/1992Ade/TrollBox/releases/latest/download/%@", name];
+    return [NSURL URLWithString:urlStr];
+}
+
 - (NSString *)pickedPACPath {
     NSString *name = [self pickedPACBaseName];
     NSString *sandbox = ABSandboxPACPath(name);
@@ -379,6 +403,53 @@ static NSString *ABSandboxPACPath(NSString *baseName) {
         return;
     }
 
+    // 1. Preferred path: open the pre-signed .mobileconfig on GitHub Releases
+    //    in Safari. The release workflow signs each file with openssl smime
+    //    (CMS/PKCS#7); iOS detects the PKCS#7 magic and sends the file to
+    //    Settings → Profile Downloaded. This is the same mechanism MYbloXX
+    //    uses, and it works around MCProfileConnection's 4001 (invalid
+    //    signature) on unsigned profiles. The in-app generated path below
+    //    is kept as a fallback for offline cases.
+    NSURL *releaseURL = [self pickedReleaseMobileconfigURL];
+    NSString *filename = [self pickedReleaseMobileconfigName];
+    UIAlertController *choose = [UIAlertController
+        alertControllerWithTitle:@"Install the AdBlocking profile"
+                         message:[NSString stringWithFormat:
+                                  @"Recommended: download the signed "
+                                  @"profile (%@) from GitHub Releases via "
+                                  @"Safari. Safari recognises it and sends "
+                                  @"you to Settings → Profile Downloaded "
+                                  @"automatically.\n\n"
+                                  @"Offline fallback builds the profile "
+                                  @"in-app and saves it to Files — you "
+                                  @"then install it manually from Settings.",
+                                  filename]
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    [choose addAction:[UIAlertAction actionWithTitle:@"Install via Safari (recommended)"
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *a) {
+        [[UIApplication sharedApplication] openURL:releaseURL options:@{} completionHandler:nil];
+    }]];
+    [choose addAction:[UIAlertAction actionWithTitle:@"Offline fallback (save to Files)"
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *a) {
+        [self doInstallProfileInApp];
+    }]];
+    [choose addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                               style:UIAlertActionStyleCancel handler:nil]];
+    choose.popoverPresentationController.sourceView = self.view;
+    choose.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+    [self presentViewController:choose animated:YES completion:nil];
+}
+
+- (void)doInstallProfileInApp {
+    // Original in-app build + MCProfileConnection + Files fallback path.
+    // Kept as a fallback only — MCProfileConnection returns 4001 on iOS 15+
+    // because our generated profile isn't CMS-signed. The share-to-Files
+    // step still gives the user a copy they can inspect or install via a
+    // third-party flow.
+    //
     // 1. Load the PAC.
     NSString *pacPath = [self pickedPACPath];
     if (!pacPath) {
