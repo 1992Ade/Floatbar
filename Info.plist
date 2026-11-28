@@ -2,20 +2,41 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
     <key>CFBundleDisplayName</key>
     <string>TrollBox</string>
     <key>CFBundleExecutable</key>
     <string>ClearShot</string>
     <key>CFBundleIdentifier</key>
     <string>com.rockylabs.clearshot</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundleName</key>
     <string>TrollBox</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+
+    <!-- TrollStore-specific: declares the binaries in the bundle that must
+         receive CS_PLATFORM_BINARY at install time. Without this key,
+         TrollStore may leave the main binary un-platformized on recent
+         versions, which is what the 2.0.4/2.0.5 diagnostic showed:
+         setuid(0)=EPERM and rootSpawn exit=-1.
+         - "ClearShot" = the main app binary (at the .app root).
+         - "killall" = haoict's helper shipped in Resources/ and copied
+           to the .app root by the Makefile after-stage step. The main
+           app calls it via posix_spawn to respring. -->
+    <key>TSRootBinaries</key>
+    <array>
+        <string>ClearShot</string>
+        <string>killall</string>
+    </array>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.4</string>
+    <string>2.0.6</string>
     <key>CFBundleVersion</key>
-    <string>6</string>
+    <string>8</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>iPhoneOS</string>
