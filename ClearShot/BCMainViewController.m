@@ -138,11 +138,17 @@ static UIColor *BCHexToColor(NSString *hex) {
     self.previewIcon = iconView;
     [self.view addSubview:self.previewIcon];
 
+    // The badge is added to self.view (NOT previewIcon) so it isn't clipped
+    // by the icon's masksToBounds. On SpringBoard the real badge pip extends
+    // beyond the icon corner; Cowabunga's preview mirrors that. Our prior
+    // build parented it to previewIcon which clipped everything outside the
+    // icon's bounds — visually wrong. Coordinates are absolute in self.view.
     CGFloat badgeSize = 38;
-    self.badgeDot = [[UIView alloc] initWithFrame:CGRectMake(iconSize - badgeSize/2 - 2,
-                                                              -badgeSize/2 + 2,
+    CGFloat badgeX = CGRectGetMaxX(iconView.frame) - badgeSize/2 - 2;
+    CGFloat badgeY = CGRectGetMinY(iconView.frame) - badgeSize/2 + 2;
+    self.badgeDot = [[UIView alloc] initWithFrame:CGRectMake(badgeX, badgeY,
                                                               badgeSize, badgeSize)];
-    [self.previewIcon addSubview:self.badgeDot];
+    [self.view addSubview:self.badgeDot];
 
     self.badgeCount = [[UILabel alloc] initWithFrame:self.badgeDot.bounds];
     self.badgeCount.text = @"1";
@@ -191,6 +197,7 @@ static UIColor *BCHexToColor(NSString *hex) {
     radSlider.maximumValue = 24;
     radSlider.value = self.chosenRadius;
     radSlider.tintColor = [UIColor systemPinkColor];
+    radSlider.tag = 1002;   // read by -didTapReset to snap the slider back to default
     [radSlider addTarget:self action:@selector(didChangeRadius:) forControlEvents:UIControlEventValueChanged];
     [self.view addSubview:radSlider];
     y += 68;
@@ -385,7 +392,24 @@ static UIColor *BCHexToColor(NSString *hex) {
     [d removeObjectForKey:kBCPersistRadiusKey];
     [d synchronize];
 
+    // Snap the in-memory state and every visible control back to the stock
+    // defaults immediately. Without this the slider and color button stayed
+    // on the previously-applied values until the user left the screen and
+    // came back — which triggered viewDidLoad and re-read the (now empty)
+    // NSUserDefaults. Refresh in place instead.
+    self.chosenColor  = [UIColor systemRedColor];
+    self.chosenRadius = 24;
+    UIButton *colBtn = (UIButton *)[self.view viewWithTag:1001];
+    if ([colBtn isKindOfClass:[UIButton class]]) {
+        colBtn.backgroundColor = self.chosenColor;
+    }
+    UISlider *radSlider = (UISlider *)[self.view viewWithTag:1002];
+    if ([radSlider isKindOfClass:[UISlider class]]) {
+        radSlider.value = (float)self.chosenRadius;
+    }
+    [self refreshPreview];
     [self refreshStatus];
+
     [self alert:@"Reset" message:@"Badge override removed. Respring to see the default badge."];
 }
 

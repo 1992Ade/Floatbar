@@ -4,13 +4,21 @@
 #import <sys/utsname.h>
 #import <sys/stat.h>
 #import <unistd.h>
+#import <errno.h>
 #import <stdio.h>
+#import <string.h>
 
 // Section classes that currently export diagnostics. A class that doesn't
 // conform to TBDiagnosticProvider is simply skipped — this list can grow
 // faster than every section catches up.
 #import "CSInstaller.h"              // ClearShot — already has diagnosticReport
+#import "CSProcessUtils.h"           // for the rootSpawn live-fire test
 // Other sections implement the protocol as a category in their own .m.
+
+// Written by main() when setuid/setgid refuse — gives us the exact errno
+// in the header block instead of just "setuid(0) likely failed".
+extern int kTBSetuidErrno;
+extern int kTBSetgidErrno;
 
 @implementation TBDiagnosticsManager
 
@@ -53,8 +61,51 @@
     if (geteuid() == 0) {
         [s appendString:@"\n✅ Running at euid=0 — all root-owned paths writable.\n"];
     } else {
-        [s appendFormat:@"\n⚠️ Not running as root (euid=%d). setuid(0) likely failed at main().\n",
-         geteuid()];
+        [s appendFormat:@"\n⚠️ Not running as root (euid=%d).\n", geteuid()];
+        if (kTBSetuidErrno != 0) {
+            [s appendFormat:@"   setuid(0) → errno=%d (%s)\n",
+             kTBSetuidErrno, strerror(kTBSetuidErrno)];
+        }
+        if (kTBSetgidErrno != 0) {
+            [s appendFormat:@"   setgid(0) → errno=%d (%s)\n",
+             kTBSetgidErrno, strerror(kTBSetgidErrno)];
+        }
+        [s appendString:@"   (not fatal — system writes go through rootSpawn; "
+                        @"see rootSpawn liveness below)\n"];
+    }
+    return s;
+}
+
+// ============================================================================
+// Live rootSpawn test — the single most important signal in this report.
+// If this shows uid=0 then every root-owned path we want to write is
+// reachable via rootSpawn, and in-process euid=501 doesn't matter. If this
+// shows uid=501 or a spawn error, NOTHING will install — that's the real
+// problem to debug.
+// ============================================================================
++ (NSString *)rootSpawnLivenessBlock {
+    NSMutableString *s = [NSMutableString string];
+    NSString *out = nil, *err = nil;
+    int rc = [CSProcessUtils rootSpawn:@"/usr/bin/id"
+                                  args:@[]
+                                stdOut:&out
+                                stdErr:&err];
+    [s appendFormat:@"rootSpawn /usr/bin/id → exit=%d\n", rc];
+    if (out.length) {
+        NSString *trimmed = [out stringByTrimmingCharactersInSet:
+                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        [s appendFormat:@"  stdout: %@\n", trimmed];
+        if ([trimmed containsString:@"uid=0"]) {
+            [s appendString:@"  ✅ rootSpawn promotes child to uid=0 — "
+                            @"system-path writes are fine.\n"];
+        } else {
+            [s appendString:@"  ❌ child is NOT at uid=0 — persona_np did not take.\n"];
+        }
+    }
+    if (err.length) {
+        NSString *trimmed = [err stringByTrimmingCharactersInSet:
+                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length) [s appendFormat:@"  stderr: %@\n", trimmed];
     }
     return s;
 }
@@ -81,12 +132,35 @@
     NSMutableString *s = [NSMutableString string];
     for (NSString *p in paths) {
         const char *cp = [p fileSystemRepresentation];
+        errno = 0;
         BOOL exists = (access(cp, F_OK) == 0);
+        int existsErrno = errno;
+        errno = 0;
         BOOL writable = (access(cp, W_OK) == 0);
-        NSString *marker = !exists ? @"— "
-                         : writable ? @"✅"
-                                    : @"❌";
-        [s appendFormat:@"  %@ %@\n", marker, p];
+        int writeErrno = errno;
+
+        NSString *marker;
+        NSString *extra = @"";
+        if (!exists) {
+            // Split ENOENT (truly missing, we'll create it via rootSpawn
+            // when needed) from EACCES (parent not traversable, which is
+            // a signal the sandbox isn't fully off).
+            if (existsErrno == ENOENT) {
+                marker = @"— ";
+                extra = @"  (does not exist — rootSpawn mkdir will create)";
+            } else {
+                marker = @"— ";
+                extra = [NSString stringWithFormat:@"  (F_OK errno=%d %s)",
+                         existsErrno, strerror(existsErrno)];
+            }
+        } else if (writable) {
+            marker = @"✅";
+        } else {
+            marker = @"❌";
+            extra = [NSString stringWithFormat:@"  (W_OK errno=%d %s — rootSpawn required)",
+                     writeErrno, strerror(writeErrno)];
+        }
+        [s appendFormat:@"  %@ %@%@\n", marker, p, extra];
     }
     return s;
 }
@@ -131,6 +205,9 @@
 
     [r appendString:@"\n─── Writability checks ───\n"];
     [r appendString:[self writabilityBlock]];
+
+    [r appendString:@"\n─── rootSpawn liveness ───\n"];
+    [r appendString:[self rootSpawnLivenessBlock]];
 
     [r appendString:@"\n─── Section diagnostics ───\n"];
     [r appendString:[self sectionBlock]];

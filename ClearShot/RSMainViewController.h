@@ -1,19 +1,15 @@
-// ============================================================================
-// RSMainViewController — "ResSetter" section.
-//
-// Port of ResolutionSetterSwift by Hao Nguyen (haoict), with UX rewritten
-// per 2026-11-27 session: a single persisted multiplier factor + Apply
-// button, instead of the old saved-presets list. Writes canvas_width /
-// canvas_height to
-//
-//   /var/mobile/Library/Preferences/com.apple.iokit.IOMobileGraphicsFamily.plist
-//
-// Reboot reverts unless the "Re-apply at every boot" persistence toggle is on.
-// The second persistence toggle, "Don't lock device after respring", is the
-// SBDontLockAfterCrash trick migrated from Jaility's standalone app.
-// ============================================================================
-
 #import <UIKit/UIKit.h>
 
+// ResSetter — display resolution multiplier.
+//
+// 2.0.2 rewrite: the write/reset path is now a verbatim port of haoict's
+// ResolutionSetterSwift (TrollStore version 1.1) — stage the plist in
+// /private/var/tmp/com.trollbox.iokit/, then rootSpawn /bin/cp -f to the
+// system destination. Our 2.0.0 shortcut (writeToURL: on the root-owned
+// path) failed silently at euid=501 and was the bricking cause. Our
+// additions on top of haoict's logic: a LaunchDaemon that re-applies the
+// last-saved size at every boot, an in-app Reset button that cleans all
+// three files, and the Don't-Lock-After-Respring mirror shared with the
+// other sections.
 @interface RSMainViewController : UIViewController
 @end

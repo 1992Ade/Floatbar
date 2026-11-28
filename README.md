@@ -29,13 +29,33 @@ non-TrollStore users" section below).
 3. **Reclaim Space**
 4. **AppRepack**
 5. **SpringBoard Tweaks** — Badge Color + Clear All + Don't Lock
-6. **ResSetter**
+6. **ResSetter** — restored in 2.0.2 with write path ported from haoict's IPA
 7. **ClearShot**
 8. **Supervise**
 9. **Tweaks**
 10. **Saved WiFi**
 11. **About Device** (includes Diagnostics)
 12. **About**
+
+> **ResSetter 2.0.2 rewrite.** The 2.0.0 brick cause was the write path:
+> `writeToURL:` on the root-owned system plist silently failed at euid=501,
+> leaving the file untouched after Apply and uncleanable after Reset. In
+> 2.0.2 the write path is ported from haoict's ResolutionSetterSwift 1.1
+> IPA (reverse-engineered from the shipped binary): stage the XML plist in
+> `/private/var/tmp/com.trollbox.iokit/`, then `rootSpawn /bin/cp -f` to
+> the system destination. Reset follows the same pattern — three
+> `rootSpawn /bin/rm -f` calls, one per poison file. This is the mechanism
+> haoict's own app has used in production since the TrollStore port
+> landed.
+>
+> **If you installed 2.0.0 and your display is unusable**, see
+> `docs/RECOVERY.md` — summary: Voice Control via Siri (`Hey Siri, turn on
+> Voice Control` → `Show grid` → tap the passcode digits by name →
+> delete `/var/mobile/Library/Preferences/com.apple.iokit.IOMobileGraphicsFamily.plist`,
+> `/var/mobile/Library/Preferences/TrollBoxGfxBackup.plist`,
+> `/Library/LaunchDaemons/com.trollbox.ressetter.plist`, reboot). ResSetter
+> 2.0.2's own Reset button handles this automatically now — the 2.0.0 one
+> couldn't.
 
 ## Sections
 

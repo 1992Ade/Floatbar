@@ -56,7 +56,7 @@
                             @"• Reclaim Space — delete logs, caches, orphan containers iOS forgets\n"
                             @"• AppRepack — install older AND newer versions (Muffinstore + MinOS patcher)\n"
                             @"• SpringBoard Tweaks — Badge Color + Clear All in app switcher + Don't lock mirror\n"
-                            @"• ResSetter — slider ×1.0→×1.5, landscape-form fix, Reset to native\n"
+                            @"• ResSetter — slider ×1.0→×1.5, write path ported from haoict's IPA, Reset via rootSpawn, boot-persistence LaunchDaemon\n"
                             @"• ClearShot — CC Capture + Record, bypasses FLAG_SECURE, native-gesture hook\n"
                             @"• Supervise — toggle IsSupervised / OrganizationName\n"
                             @"• Tweaks — dylib / bundle injection (TrollFools engine ported)\n"

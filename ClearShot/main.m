@@ -14,9 +14,18 @@
 //
 // After these two lines: getuid() == geteuid() == 0, and NSFileManager
 // writes/removes anywhere / allows us to write.
+// Captured once at launch so the Diagnostics screen can report the exact
+// reason setuid(0) refused — without this we'd see "euid=501" with no way
+// to tell EPERM (not platformized) from EINVAL (persona mgmt not up) from
+// anything else. The symbol is read by TBDiagnosticsManager.
+int kTBSetuidErrno = 0;
+int kTBSetgidErrno = 0;
+
 int main(int argc, char *argv[]) {
-    setuid(0);
-    setgid(0);
+    errno = 0;
+    if (setuid(0) != 0) kTBSetuidErrno = errno;
+    errno = 0;
+    if (setgid(0) != 0) kTBSetgidErrno = errno;
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([CSAppDelegate class]));
     }

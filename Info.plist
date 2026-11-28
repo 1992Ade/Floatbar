@@ -13,9 +13,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.0</string>
+    <string>2.0.2</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>4</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>iPhoneOS</string>
@@ -45,6 +45,15 @@
     <string>TrollBox's LocSim section uses this ONLY to re-center the map on your real current position when you tap the location button. Your position is never saved or sent anywhere. CLSimulationManager (what LocSim drives) runs from your pins; it doesn't need your real location to work.</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>TrollBox's LocSim section uses this ONLY to re-center the map on your real current position when you tap the location button.</string>
+
+    <!-- Files-app visibility: when the Ad Blocking install fallback drops a
+         .mobileconfig into Documents/, these two flags make it visible under
+         "On my iPhone → TrollBox" in Files. Without them, the user looked in
+         Files after the fallback and found nothing. -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
 
     <!-- App icons at the root of the .app bundle (dropped there by after-stage). -->
     <key>CFBundleIcons</key>

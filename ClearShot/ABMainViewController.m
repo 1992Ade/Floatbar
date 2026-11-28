@@ -449,13 +449,34 @@ static NSString *ABSandboxPACPath(NSString *baseName) {
         id ret = [mc installProfileData:profileData outError:&installErr];
         (void)ret;
         if (installErr) {
-            [self alert:@"Install failed"
-                message:[NSString stringWithFormat:
-                         @"MCProfileConnection install error:\n%@\n\n"
-                         @"Falling back: the profile has been saved to Files; "
-                         @"install it from Settings → Profile Downloaded.",
-                         installErr.localizedDescription]];
-            [self shareProfileFallback:profileData];
+            // Chain alert → share: iOS refuses to present two VCs at once,
+            // so if we called shareProfileFallback right after the alert
+            // present, the UIActivityViewController never appeared and the
+            // user went looking in Files for a file that was never surfaced.
+            // Present the share sheet from the alert's OK handler instead,
+            // after the alert has fully dismissed.
+            NSString *domain = installErr.domain ?: @"unknown";
+            NSInteger code   = installErr.code;
+            NSString *desc   = installErr.localizedDescription ?: @"unknown";
+            UIAlertController *ac = [UIAlertController
+                alertControllerWithTitle:@"Install failed"
+                                 message:[NSString stringWithFormat:
+                                          @"MCProfileConnection install error:\n"
+                                          @"%@ (code %ld)\n%@\n\n"
+                                          @"Falling back: the profile will be saved "
+                                          @"to the TrollBox folder in Files; install "
+                                          @"it from Settings → Profile Downloaded.",
+                                          domain, (long)code, desc]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"Save to Files"
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *a) {
+                [self shareProfileFallback:profileData];
+            }]];
+            [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                   style:UIAlertActionStyleCancel
+                                                 handler:nil]];
+            [self presentViewController:ac animated:YES completion:nil];
         } else {
             [self alert:@"Installed"
                 message:[NSString stringWithFormat:
@@ -473,36 +494,124 @@ static NSString *ABSandboxPACPath(NSString *baseName) {
 }
 
 - (void)shareProfileFallback:(NSData *)data {
-    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+    // Write to Documents/ rather than tmp so the file is actually visible in
+    // Files.app under TrollBox (requires UIFileSharingEnabled +
+    // LSSupportsOpeningDocumentsInPlace in Info.plist). tmp lived in a path
+    // Files.app never surfaces, so even if the Activity sheet had shown,
+    // the file would have looked lost.
+    NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                         NSUserDomainMask, YES);
+    NSString *destDir = docs.firstObject ?: NSTemporaryDirectory();
+    NSString *dest = [destDir stringByAppendingPathComponent:
                       @"TrollBoxAdBlock.mobileconfig"];
-    [data writeToFile:tmp atomically:YES];
+    [data writeToFile:dest atomically:YES];
     UIActivityViewController *av = [[UIActivityViewController alloc]
-                                     initWithActivityItems:@[[NSURL fileURLWithPath:tmp]]
+                                     initWithActivityItems:@[[NSURL fileURLWithPath:dest]]
                                      applicationActivities:nil];
     [self presentViewController:av animated:YES completion:nil];
 }
 
 - (void)doRemoveProfile {
-    Class mcClass = NSClassFromString(@"MCProfileConnection");
-    if (!mcClass) {
-        [self alert:@"Not available"
-            message:@"MCProfileConnection isn't exposed in this build. "
-                    @"Remove the profile manually via Settings → General → "
-                    @"VPN & Device Management."];
+    // Short-circuit when nothing is installed under our identifier — the
+    // private remove API throws on a missing profile on some iOS versions
+    // and that uncaught NSException was crashing the whole app.
+    if (![self isProfileInstalled]) {
+        [self alert:@"Nothing to remove"
+            message:@"No TrollBox Ad Blocking profile is currently installed."];
         return;
     }
-    MCProfileConnection *mc = [mcClass sharedConnection];
-    NSError *err = nil;
-    [mc removeProfileWithIdentifier:kABProfileIdentifier outError:&err];
-    if (err) {
-        [self alert:@"Remove failed"
-            message:err.localizedDescription ?: @"unknown"];
-    } else {
-        [self alert:@"Removed"
-            message:@"Ad Blocking profile removed."];
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                      withRowAnimation:UITableViewRowAnimationAutomatic];
+
+    Class mcClass = NSClassFromString(@"MCProfileConnection");
+    if (!mcClass) {
+        [self offerSettingsRemovalWithReason:
+            @"MCProfileConnection isn't exposed in this build."];
+        return;
     }
+
+    __block NSError *err = nil;
+    __block BOOL threw   = NO;
+    __block NSString *threwReason = nil;
+
+    @try {
+        id mc = [mcClass sharedConnection];
+        SEL sel = NSSelectorFromString(@"removeProfileWithIdentifier:outError:");
+        if (!mc || ![mc respondsToSelector:sel]) {
+            [self offerSettingsRemovalWithReason:
+                @"The private removeProfileWithIdentifier:outError: selector "
+                @"isn't exposed in this iOS build."];
+            return;
+        }
+        // NSInvocation call — same defensive pattern as isProfileInstalled.
+        // Direct message with the wrong signature was the crash vector.
+        NSMethodSignature *sig = [mc methodSignatureForSelector:sel];
+        if (!sig || sig.numberOfArguments < 4) {
+            [self offerSettingsRemovalWithReason:
+                @"The removeProfileWithIdentifier:outError: signature can't be "
+                @"resolved on this iOS build."];
+            return;
+        }
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        inv.target   = mc;
+        inv.selector = sel;
+        NSString *ident = kABProfileIdentifier;
+        NSError *__autoreleasing localErr = nil;
+        NSError *__autoreleasing *errPtr  = &localErr;
+        [inv setArgument:&ident  atIndex:2];
+        [inv setArgument:&errPtr atIndex:3];
+        [inv invoke];
+        err = localErr;
+    } @catch (NSException *e) {
+        threw = YES;
+        threwReason = [NSString stringWithFormat:@"%@: %@", e.name, e.reason];
+    }
+
+    if (threw) {
+        [self offerSettingsRemovalWithReason:
+            [NSString stringWithFormat:@"The private remove API raised an "
+                                        @"exception:\n%@", threwReason]];
+        return;
+    }
+    if (err) {
+        [self offerSettingsRemovalWithReason:
+            [NSString stringWithFormat:@"The private remove API returned:\n%@\n"
+                                        @"(domain %@, code %ld)",
+             err.localizedDescription ?: @"unknown",
+             err.domain ?: @"?", (long)err.code]];
+        return;
+    }
+
+    [self alert:@"Removed" message:@"Ad Blocking profile removed."];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                  withRowAnimation:UITableViewRowAnimationAutomatic];
+}
+
+// Guaranteed-working fallback for any remove failure: hand the user straight
+// to the Settings page that lists installed profiles. One tap there and they
+// can remove it themselves, no private API involved.
+- (void)offerSettingsRemovalWithReason:(NSString *)reason {
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"Remove via Settings"
+                         message:[NSString stringWithFormat:
+                                  @"%@\n\nOpen Settings → General → VPN & "
+                                  @"Device Management to remove the profile "
+                                  @"yourself.", reason]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Open Settings"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *a) {
+        NSURL *u = [NSURL URLWithString:
+            @"App-Prefs:root=General&path=ManagedConfigurationList"];
+        if ([[UIApplication sharedApplication] canOpenURL:u]) {
+            [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
+        } else {
+            [[UIApplication sharedApplication] openURL:
+                [NSURL URLWithString:UIApplicationOpenSettingsURLString]
+                                               options:@{} completionHandler:nil];
+        }
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                           style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 #pragma mark - Template path lookup

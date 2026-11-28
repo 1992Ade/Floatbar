@@ -62,7 +62,7 @@ typedef UIViewController *(^TBSectionFactory)(void);
     //   3  Reclaim Space
     //   4  AppRepack
     //   5  SpringBoard Tweaks  (contains Badge Color + Clear All + Don't Lock)
-    //   6  ResSetter
+    //   6  ResSetter           (2.0.2: write path ported from haoict's IPA)
     //   7  ClearShot
     //   8  Supervise
     //   9  Tweaks

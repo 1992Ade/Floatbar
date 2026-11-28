@@ -112,6 +112,15 @@ after-stage::
 	@# --- 3) App-level Info.plist and icons at the root of the .app bundle.
 	@cp -f Info.plist $(APP_BUNDLE)/Info.plist
 	@find Resources -maxdepth 1 -name 'icon-*.png' -exec cp -f {} $(APP_BUNDLE)/ \; 2>/dev/null || true
+	@# Embed haoict's killall binary (from ResolutionSetterSwift 1.1 IPA) so
+	@# ResSetter can respring via rootSpawn $(APP_BUNDLE)/killall SpringBoard.
+	@# Our CSProcessUtils.forceRespring uses in-process kill+sysctl today
+	@# which also works; this is a backup path for parity with upstream.
+	@if [ -f Resources/killall ]; then \
+	  cp -f Resources/killall $(APP_BUNDLE)/killall; \
+	  chmod +x $(APP_BUNDLE)/killall; \
+	  echo "Embedded killall helper for ResSetter."; \
+	fi
 	@# --- 3b) Embed the hook dylibs inside the .app so the UI can hand
 	@# them to TFInjector at one tap (SpringBoard Tweaks → Clear All,
 	@# ClearShot → Native gesture bypass). Both dylibs land at

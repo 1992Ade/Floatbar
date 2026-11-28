@@ -158,11 +158,21 @@
         : [self compatibleOrOlder][ip.row];
 
     NSString *bundleVersion = v[@"bundle_version"] ?: @"?";
-    NSString *minOS = v[@"minimum_os_version"] ?: v[@"minimumOsVersion"] ?: @"?";
+    NSString *rawMinOS = v[@"minimum_os_version"] ?: v[@"minimumOsVersion"];
+    NSString *minOS = rawMinOS.length ? rawMinOS : @"?";
+    BOOL minOSKnown = rawMinOS.length > 0;
 
+    // When the catalog doesn't ship minimum_os_version (bilin.eu.org/history/
+    // never returns it), highestCompatibleIndex is -1 and every version
+    // lands in section 1. A blanket red tint reads as "none of these are
+    // installable" which is misleading — we simply don't know. Grey the
+    // unknowns instead so the user sees "try at your own risk" rather than
+    // "forbidden".
     NSString *icon;
     UIColor *tint;
-    if (ip.section == 1) {
+    if (ip.section == 1 && !minOSKnown) {
+        icon = @"⚪️"; tint = [UIColor lightGrayColor];
+    } else if (ip.section == 1) {
         icon = @"🔴"; tint = [UIColor systemRedColor];
     } else if (ip.row == 0) {
         icon = @"🟢"; tint = [UIColor systemGreenColor];
@@ -172,7 +182,9 @@
 
     cell.textLabel.text = [NSString stringWithFormat:@"%@  %@", icon, bundleVersion];
     cell.textLabel.textColor = tint;
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"needs iOS %@+", minOS];
+    cell.detailTextLabel.text = minOSKnown
+        ? [NSString stringWithFormat:@"needs iOS %@+", minOS]
+        : @"iOS requirement unknown (try at your own risk)";
     return cell;
 }
 
@@ -519,8 +531,14 @@
     else               verdict = @"Very unlikely to work: 3+ iOS majors above.";
 
     NSString *msg = [NSString stringWithFormat:
-        @"Version %@ needs iOS %@+. You're on %@.\n\n%@",
-        bundleString, requiredMinVersion ?: @"?", device, verdict];
+        @"Version %@ needs iOS %@+. You're on %@.\n\n%@\n\n"
+        @"⚠ Known Store behaviour: when you request a version above your "
+        @"device's iOS, iTunesStore silently serves the latest compatible "
+        @"version instead of refusing. The MinOS patch therefore doesn't "
+        @"get a chance to run through this path.\n\n"
+        @"To actually install v%@, grab the .ipa from a 3rd-party catalog "
+        @"(AppDB, ipa.aspy.dev) and use \"Patch an IPA from Files\".",
+        bundleString, requiredMinVersion ?: @"?", device, verdict, bundleString];
 
     UIAlertController *ac = [UIAlertController
                               alertControllerWithTitle:@"Not directly compatible"
@@ -528,11 +546,11 @@
                               preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                            style:UIAlertActionStyleCancel handler:nil]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"Try Store anyway"
+    [ac addAction:[UIAlertAction actionWithTitle:@"Get the IPA →"
                                            style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction *a) {
         [vc dismissViewControllerAnimated:YES completion:^{
-            [self downloadTrack:trackId version:vid];
+            [self offerIPASources:trackId bundleString:bundleString];
         }];
     }]];
     [ac addAction:[UIAlertAction actionWithTitle:@"Patch an IPA from Files"
@@ -542,7 +560,46 @@
             [self pickIPAFromFiles];
         }];
     }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Try Store anyway (will likely downgrade)"
+                                           style:UIAlertActionStyleDestructive
+                                         handler:^(UIAlertAction *a) {
+        [vc dismissViewControllerAnimated:YES completion:^{
+            [self downloadTrack:trackId version:vid];
+        }];
+    }]];
     [vc presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)offerIPASources:(long long)trackId bundleString:(NSString *)bundleString {
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"Get the IPA"
+                         message:[NSString stringWithFormat:
+                                  @"Open one of these catalogs in Safari and "
+                                  @"download the .ipa for v%@. Once downloaded "
+                                  @"to Files, come back here and tap \"Patch "
+                                  @"an IPA from Files\".", bundleString]
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    NSDictionary *urls = @{
+        @"AppDB":        [NSString stringWithFormat:@"https://appdb.to/app/%lld", trackId],
+        @"ipa.aspy.dev": [NSString stringWithFormat:@"https://ipa.aspy.dev/app/%lld", trackId],
+        @"ArmConverter": [NSString stringWithFormat:@"https://armconverter.com/decryptedappstore/%lld", trackId],
+    };
+    for (NSString *name in @[@"AppDB", @"ipa.aspy.dev", @"ArmConverter"]) {
+        NSString *url = urls[name];
+        [ac addAction:[UIAlertAction actionWithTitle:name
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(UIAlertAction *a) {
+            [[UIApplication sharedApplication] openURL:[NSURL URLWithString:url]
+                                               options:@{}
+                                     completionHandler:nil];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                           style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect =
+        CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (int)majorGapFrom:(NSString *)deviceOS to:(NSString *)requiredOS {

@@ -87,8 +87,21 @@ def main():
                                      label + (ota_suffix.replace("-", " ") if ota_suffix else ""))
             name = f"TrollBoxAdBlock-{label}{ota_suffix}.mobileconfig"
             dst  = out_dir / name
-            with open(dst, "wb") as fh:
-                plistlib.dump(cfg, fh)
+            # plistlib.dumps() writes the XML preamble with SINGLE quotes
+            # (<?xml version='1.0' encoding='UTF-8'?>). QuickLook's UTI
+            # sniff on iOS is stricter than real profile loading and will
+            # occasionally classify a single-quoted preamble as text/xml
+            # instead of a config profile — the file then opens as text in
+            # Safari / Files instead of triggering Settings → Profile
+            # Downloaded. Rewrite the preamble to match Apple's own double-
+            # quoted convention.
+            raw = plistlib.dumps(cfg, fmt=plistlib.FMT_XML)
+            raw = raw.replace(
+                b"<?xml version='1.0' encoding='UTF-8'?>",
+                b'<?xml version="1.0" encoding="UTF-8"?>',
+                1,
+            )
+            dst.write_bytes(raw)
             print(f"[+] {name}: {dst.stat().st_size:,} bytes")
 
 

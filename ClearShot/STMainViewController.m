@@ -46,46 +46,54 @@ static NSString * const kHookClearAll = @"libClearAllHook.dylib";
 }
 
 #pragma mark - Table layout
-// 0: Appearance (Badge Color push)
-// 1: Hooks (Clear All toggle)
-// 2: Persistence (Don't Lock mirror)
-// 3: SpringBoard state + uninject-all nuke
+// 0: Quick actions  (respring now — always-available, no toggle required)
+// 1: Appearance    (Badge Color push)
+// 2: Hooks         (Clear All toggle)
+// 3: Persistence   (Don't Lock mirror)
+// 4: SpringBoard state + uninject-all nuke
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 5; }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    if (s == 0) return 1;   // Badge Color
-    if (s == 1) return 1;   // Clear All
-    if (s == 2) return 1;   // Don't lock
+    if (s == 0) return 1;   // Respring now
+    if (s == 1) return 1;   // Badge Color
+    if (s == 2) return 1;   // Clear All
+    if (s == 3) return 1;   // Don't lock
     return 2;                // status row + nuke row
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
-    if (s == 0) return @"Appearance";
-    if (s == 1) return @"Hooks";
-    if (s == 2) return @"Persistence";
+    if (s == 0) return @"Quick actions";
+    if (s == 1) return @"Appearance";
+    if (s == 2) return @"Hooks";
+    if (s == 3) return @"Persistence";
     return @"SpringBoard state";
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
     if (s == 0) {
+        return @"Kills SpringBoard immediately. Any pending visual change "
+               @"(Badge Color, hook toggles, Don't-lock-after-respring) is "
+               @"picked up on the next launch.";
+    }
+    if (s == 1) {
         return @"Badge Color recolors SpringBoard notification pips system-wide. "
                @"It writes a bitmap to the SpringBoard icon cache and needs a "
                @"respring to take effect.";
     }
-    if (s == 1) {
+    if (s == 2) {
         return @"Each toggle injects a dylib into SpringBoard via the Tweaks "
                @"engine (TFInjector). A respring picks up the change. Toggle "
                @"off to eject the dylib and respring again.\n\n"
                @"⚠ Before updating iOS, use \"Uninject all SB hooks\" below "
                @"so SpringBoard launches clean on the new system version.";
     }
-    if (s == 2) {
-        return @"Mirrored toggle: this is the same SBDontLockAfterCrash key "
-               @"ResSetter, Badge Color and ClearShot write. Change any one, "
-               @"all four sections stay in sync.";
-    }
     if (s == 3) {
+        return @"Mirrored toggle: this is the same SBDontLockAfterCrash key "
+               @"Badge Color and ClearShot write. Change any one, all three "
+               @"sections stay in sync.";
+    }
+    if (s == 4) {
         NSArray *leafs = [TFInjector injectedDylibLeafsForAppID:kSpringBoardBundleID];
         if (leafs.count == 0) return @"No TrollBox hooks are currently injected into SpringBoard.";
         return [NSString stringWithFormat:@"Injected now: %@",
@@ -104,12 +112,20 @@ static NSString * const kHookClearAll = @"libClearAllHook.dylib";
     cell.detailTextLabel.numberOfLines = 0;
 
     if (ip.section == 0) {
+        cell.textLabel.text = @"Respring now";
+        cell.textLabel.textColor = [UIColor systemBlueColor];
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
+        cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+        cell.detailTextLabel.text = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+
+    } else if (ip.section == 1) {
         cell.textLabel.text = @"Badge Color";
         cell.detailTextLabel.text = @"Recolor SpringBoard notification badges";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
 
-    } else if (ip.section == 1) {
+    } else if (ip.section == 2) {
         cell.textLabel.text = @"Clear All in app switcher";
         cell.detailTextLabel.text = @"Adds a Clear All button to the native app "
                                      @"switcher — kills every app except "
@@ -124,7 +140,7 @@ static NSString * const kHookClearAll = @"libClearAllHook.dylib";
         cell.accessoryView = self.clearAllSwitch;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
-    } else if (ip.section == 2) {
+    } else if (ip.section == 3) {
         cell.textLabel.text = @"Don't lock device after respring";
         BOOL on = [TBSpringBoardPrefs dontLockActive];
         cell.detailTextLabel.text = on
@@ -164,9 +180,13 @@ static NSString * const kHookClearAll = @"libClearAllHook.dylib";
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 0) {
+        // Quick action: respring immediately. No confirmation sheet — the
+        // whole point of the button being here is a one-tap path.
+        [CSProcessUtils forceRespring];
+    } else if (ip.section == 1) {
         BCMainViewController *vc = [[BCMainViewController alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
-    } else if (ip.section == 3 && ip.row == 1) {
+    } else if (ip.section == 4 && ip.row == 1) {
         [self confirmNuke];
     }
 }

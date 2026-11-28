@@ -6,15 +6,33 @@
 
 // ============================================================================
 // Paths and keys
+//
+// The write path is now a port of haoict's ResolutionSetterSwift (TrollStore
+// 1.1). Reading the shipped binary confirmed: they stage the plist in a
+// sandbox-writable path then cp -f it to /var/mobile/Library/Preferences/
+// via a child process that has been persona-promoted to uid=0. They write
+// XML plist (not binary — our prior assumption was wrong). They use the
+// four keys canvas_width / canvas_height / screenWidth / screenHeight in
+// landscape form.
 // ============================================================================
 
+// Landing path iOS actually reads.
 static NSString * const kGfxPlist =
     @"/var/mobile/Library/Preferences/com.apple.iokit.IOMobileGraphicsFamily.plist";
 
-// Don't-lock-after-respring lives in a helper now (TBSpringBoardPrefs) and
-// is mirrored in SpringBoard Tweaks, Badge Color and ClearShot.
+// Sandbox-accessible staging directory. haoict uses
+// /private/var/tmp/com.haoict.iokit.IOMobileGraphicsFamily/; we use our own
+// slug to avoid stepping on their files if the user had their app installed
+// before. Our process can writeToURL: here directly even at euid=501
+// because /private/var/tmp is 0777 on iOS.
+static NSString * const kGfxStageDir  =
+    @"/private/var/tmp/com.trollbox.iokit";
+static NSString * const kGfxStagePath =
+    @"/private/var/tmp/com.trollbox.iokit/com.apple.iokit.IOMobileGraphicsFamily.plist";
 
-// LaunchDaemon that re-applies the saved backup on every boot.
+// LaunchDaemon that re-applies the saved backup on every boot. This is OUR
+// addition on top of haoict's logic (they document "reboot to revert" as
+// the escape hatch — there's no persistence).
 static NSString * const kAutoApplyDaemonPath =
     @"/Library/LaunchDaemons/com.trollbox.ressetter.plist";
 static NSString * const kAutoApplyBackupPath =
@@ -32,7 +50,8 @@ static NSString * const kGfxCanvasHeight = @"canvas_height";
 static NSString * const kGfxScreenWidth  = @"screenWidth";
 static NSString * const kGfxScreenHeight = @"screenHeight";
 
-// Slider bounds.
+// Slider bounds — same range haoict exposes in the app, plus their built-in
+// warning about going too far.
 static const double kFactorMin = 1.0;
 static const double kFactorMax = 1.5;
 
@@ -88,11 +107,8 @@ static const double kFactorMax = 1.5;
 
 // iOS expects canvas_width / canvas_height in the gfx plist to be the
 // landscape-orientation form of the panel (width = long side, height =
-// short side). UIScreen.nativeBounds returns portrait form (width = short
-// side, height = long side) on a portrait phone, so we MAX / MIN on the
-// way out — same convention haoict's ResolutionSetterSwift uses. A bug
-// in a previous build wrote the portrait form and caused the x1.2
-// artifacts a user reported.
+// short side). UIScreen.nativeBounds returns portrait form on a portrait
+// phone, so we MAX / MIN on the way out. Same convention haoict uses.
 - (CGSize)deviceNativeSize {
     UIScreen *s = [UIScreen mainScreen];
     CGRect nb = [s respondsToSelector:@selector(nativeBounds)] ? s.nativeBounds : s.bounds;
@@ -101,8 +117,7 @@ static const double kFactorMax = 1.5;
     return CGSizeMake(longer, shorter);
 }
 
-// Same convention for the "Current" reading — read whatever's in the plist,
-// normalize to landscape form.
+// Same convention for "Current" — read whatever's in the plist, normalize.
 - (CGSize)currentPixelSize {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kGfxPlist];
     NSNumber *w = d[kGfxCanvasWidth];
@@ -145,17 +160,18 @@ static const double kFactorMax = 1.5;
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
     if (s == 1) {
-        return @"Slide between ×1.00 and ×1.50. The multiplier is persisted. "
-               @"Target = native × factor, rounded to whole pixels in the "
-               @"landscape canvas form the gfx plist expects. Tap Apply to "
-               @"write it, respring to pick it up.";
+        return @"Slide between ×1.00 and ×1.50. Target = native × factor, "
+               @"rounded to whole pixels in landscape form.\n\n"
+               @"⚠ haoict's warning stands: don't push the factor to crazy "
+               @"values. If the screen becomes black or unusable, reboot "
+               @"the phone to return to the native resolution.";
     }
     if (s == 2) {
-        return @"Reset to native nukes every trace ResSetter left behind: the "
-               @"LaunchDaemon (if installed), the saved backup plist, the "
-               @"canvas_* keys in the gfx plist, and the persisted factor in "
-               @"NSUserDefaults. Use this if any prior apply left the device "
-               @"with visual artifacts.";
+        return @"Nukes every trace ResSetter left behind: the LaunchDaemon "
+               @"(if installed), the saved backup plist, the gfx plist, and "
+               @"the persisted factor. All path-removals go through "
+               @"rootSpawn — they succeed even when our main process can't "
+               @"touch root-owned files directly.";
     }
     if (s == 3) {
         return @"• Re-apply at every boot: installs a LaunchDaemon that "
@@ -259,7 +275,7 @@ static const double kFactorMax = 1.5;
 }
 
 - (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == 1 && ip.row == 0) return 72;  // give the slider room
+    if (ip.section == 1 && ip.row == 0) return 72;
     return UITableViewAutomaticDimension;
 }
 
@@ -322,13 +338,56 @@ static const double kFactorMax = 1.5;
 }
 
 - (void)didSlideFactor:(UISlider *)s {
-    // Snap to 0.01 steps for stable readout.
     double v = round(s.value * 100.0) / 100.0;
     [self saveFactor:v];
     self.factorReadout.text = [NSString stringWithFormat:@"×%.2f", self.factor];
-    // Just refresh the Target row.
     [self.table reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:1 inSection:1]]
                       withRowAnimation:UITableViewRowAnimationNone];
+}
+
+#pragma mark - Core write path (haoict pattern — stage then rootSpawn cp)
+
+// Write the full plist dict (XML, haoict-style) to the system destination.
+// Returns a human-readable error string on failure, or nil on success.
+- (NSString *)writeGfxPlist:(NSDictionary *)d {
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // 1. Make sure the stage directory exists. /private/var/tmp is 0777 so
+    //    we can create a subdirectory at euid=501 without rootSpawn.
+    NSError *mkdirErr = nil;
+    if (![fm createDirectoryAtPath:kGfxStageDir
+                withIntermediateDirectories:YES
+                                 attributes:nil
+                                      error:&mkdirErr]) {
+        return [NSString stringWithFormat:@"Couldn't create stage dir %@: %@",
+                kGfxStageDir, mkdirErr.localizedDescription ?: @"?"];
+    }
+
+    // 2. Write the plist to the stage. writeToURL: produces XML format, the
+    //    same shape haoict's ResolutionSetterSwift ships (confirmed from
+    //    the IPA strings: <?xml version="1.0" encoding="UTF-8"?> + plist
+    //    DOCTYPE). The sandbox allows us to write here directly even at
+    //    euid=501.
+    NSError *writeErr = nil;
+    if (![d writeToURL:[NSURL fileURLWithPath:kGfxStagePath] error:&writeErr]) {
+        return [NSString stringWithFormat:@"Stage write failed: %@",
+                writeErr.localizedDescription ?: @"?"];
+    }
+
+    // 3. cp -f via rootSpawn so the copy lands on /var/mobile/Library/Preferences/
+    //    even though that file is root-owned. In-process NSFileManager would
+    //    fail silently here (the 2.0.0 brick). rootSpawn uses persona_np
+    //    to promote the child to uid=0, same mechanism haoict's app uses.
+    NSString *spawnOut = nil, *spawnErr = nil;
+    int rc = [CSProcessUtils rootSpawn:@"/bin/cp"
+                                  args:@[@"-f", kGfxStagePath, kGfxPlist]
+                                stdOut:&spawnOut stdErr:&spawnErr];
+    if (rc != 0) {
+        return [NSString stringWithFormat:
+                @"rootSpawn /bin/cp exit=%d\nstderr: %@\nstdout: %@",
+                rc, spawnErr ?: @"(none)", spawnOut ?: @"(none)"];
+    }
+    return nil;
 }
 
 #pragma mark - Apply
@@ -337,8 +396,9 @@ static const double kFactorMax = 1.5;
     CGSize t = [self targetPixelSize];
     NSString *msg = [NSString stringWithFormat:
                      @"Apply %d × %d pixels (native × %.2f)?\n\n"
-                     @"A respring is needed to pick up the change. Reboot "
-                     @"reverts to native unless Re-apply at boot is on.",
+                     @"A respring is needed to pick up the change. If the "
+                     @"screen becomes unusable at this factor, reboot the "
+                     @"phone to revert to native.",
                      (int)t.width, (int)t.height, self.factor];
     UIAlertController *ac = [UIAlertController
                               alertControllerWithTitle:@"Apply resolution"
@@ -358,6 +418,7 @@ static const double kFactorMax = 1.5;
     NSInteger w = (NSInteger)t.width;
     NSInteger h = (NSInteger)t.height;
 
+    // Merge with the existing plist (preserve any iOS-written sibling keys).
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
     NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:kGfxPlist];
     if (existing) [d addEntriesFromDictionary:existing];
@@ -366,12 +427,9 @@ static const double kFactorMax = 1.5;
     d[kGfxScreenWidth]  = @(w);
     d[kGfxScreenHeight] = @(h);
 
-    NSError *writeErr = nil;
-    BOOL ok = [d writeToURL:[NSURL fileURLWithPath:kGfxPlist] error:&writeErr];
-    if (!ok) {
-        [self alert:@"Write failed"
-            message:[NSString stringWithFormat:@"%@\n\nTarget: %@",
-                     writeErr.localizedDescription ?: @"unknown", kGfxPlist]];
+    NSString *err = [self writeGfxPlist:d];
+    if (err) {
+        [self alert:@"Apply failed" message:err];
         return;
     }
 
@@ -396,19 +454,18 @@ static const double kFactorMax = 1.5;
     [self presentViewController:ac animated:YES completion:nil];
 }
 
-#pragma mark - Reset (nuke everything)
+#pragma mark - Reset (nuke everything via rootSpawn)
 
 - (void)confirmReset {
     UIAlertController *ac = [UIAlertController
                               alertControllerWithTitle:@"Reset to native"
                               message:@"Nuke ResSetter's full state:\n\n"
-                                      @"  • Remove the LaunchDaemon (if installed)\n"
-                                      @"  • Remove the saved backup plist\n"
-                                      @"  • Delete the canvas_* keys in the gfx plist\n"
-                                      @"  • Reset the persisted factor to ×1.00\n\n"
-                                      @"Then respring to the native resolution.\n\n"
-                                      @"Use this if a prior apply left the device "
-                                      @"with visual artifacts or wrong resolution."
+                                      @"  • /Library/LaunchDaemons/com.trollbox.ressetter.plist\n"
+                                      @"  • /var/mobile/Library/Preferences/TrollBoxGfxBackup.plist\n"
+                                      @"  • /var/mobile/Library/Preferences/com.apple.iokit.IOMobileGraphicsFamily.plist\n"
+                                      @"  • NSUserDefaults factor\n\n"
+                                      @"All removals go through rootSpawn so they succeed even "
+                                      @"at euid=501. Respring after to return to native."
                               preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                            style:UIAlertActionStyleCancel handler:nil]];
@@ -421,53 +478,43 @@ static const double kFactorMax = 1.5;
 }
 
 - (void)performReset {
-    NSFileManager *fm = [NSFileManager defaultManager];
-
-    // 1) Remove the LaunchDaemon file. unlink() works at euid=0 after
-    //    setuid(0). If it fails we also try rootSpawn /bin/rm as a belt-
-    //    and-braces fallback.
-    const char *daemonC = [kAutoApplyDaemonPath fileSystemRepresentation];
-    if (unlink(daemonC) != 0 && access(daemonC, F_OK) == 0) {
-        [CSProcessUtils rootSpawn:@"/bin/rm" args:@[@"-f", kAutoApplyDaemonPath]
-                           stdOut:NULL stdErr:NULL];
-    }
-
-    // 2) Remove the backup plist.
-    [fm removeItemAtPath:kAutoApplyBackupPath error:nil];
-
-    // 3) Delete the canvas_* keys from the gfx plist WITHOUT touching the
-    //    rest of the file. If no other keys remain, remove the plist
-    //    entirely so iOS reads its defaults.
-    NSMutableDictionary *d = [[NSMutableDictionary alloc]
-                                initWithContentsOfFile:kGfxPlist];
-    if (d) {
-        [d removeObjectForKey:kGfxCanvasWidth];
-        [d removeObjectForKey:kGfxCanvasHeight];
-        [d removeObjectForKey:kGfxScreenWidth];
-        [d removeObjectForKey:kGfxScreenHeight];
-        if (d.count == 0) {
-            [fm removeItemAtPath:kGfxPlist error:nil];
+    NSMutableArray<NSString *> *log = [NSMutableArray array];
+    NSArray<NSString *> *targets = @[
+        kAutoApplyDaemonPath,
+        kAutoApplyBackupPath,
+        kGfxPlist,
+    ];
+    for (NSString *p in targets) {
+        if (access([p fileSystemRepresentation], F_OK) != 0) {
+            [log addObject:[NSString stringWithFormat:@"— %@ (absent)", p]];
+            continue;
+        }
+        NSString *out = nil, *errStr = nil;
+        int rc = [CSProcessUtils rootSpawn:@"/bin/rm"
+                                      args:@[@"-f", p]
+                                    stdOut:&out stdErr:&errStr];
+        if (rc == 0) {
+            [log addObject:[NSString stringWithFormat:@"✅ %@", p]];
         } else {
-            [d writeToURL:[NSURL fileURLWithPath:kGfxPlist] error:nil];
+            [log addObject:[NSString stringWithFormat:@"❌ %@ (rc=%d %@)",
+                            p, rc, errStr ?: @"?"]];
         }
     }
 
-    // 4) Reset the NSUserDefaults keys.
+    // Reset NSUserDefaults factor/last size.
     NSUserDefaults *u = [NSUserDefaults standardUserDefaults];
     [u removeObjectForKey:kFactorKey];
     [u removeObjectForKey:kLastWidthKey];
     [u removeObjectForKey:kLastHeightKey];
     [u synchronize];
     self.factor = 1.0;
+    [log addObject:@"✅ NSUserDefaults (factor + last size)"];
 
     [self.table reloadData];
 
-    // 5) Prompt for immediate respring so backboardd re-reads defaults.
     UIAlertController *ac = [UIAlertController
                               alertControllerWithTitle:@"Reset done"
-                              message:@"Daemon removed, backup removed, gfx plist "
-                                      @"keys deleted, factor back to ×1.00.\n\n"
-                                      @"Respring now to drop to native resolution."
+                              message:[log componentsJoinedByString:@"\n"]
                               preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"Later"
                                            style:UIAlertActionStyleCancel handler:nil]];
@@ -479,7 +526,7 @@ static const double kFactorMax = 1.5;
     [self presentViewController:ac animated:YES completion:nil];
 }
 
-#pragma mark - Persist across reboot (LaunchDaemon)
+#pragma mark - Persist across reboot (LaunchDaemon — our own addition)
 
 - (BOOL)autoApplyActive {
     return [[NSFileManager defaultManager] fileExistsAtPath:kAutoApplyDaemonPath];
@@ -492,6 +539,8 @@ static const double kFactorMax = 1.5;
         kGfxScreenWidth:  @(w),
         kGfxScreenHeight: @(h),
     };
+    // /var/mobile/Library/Preferences is user-mobile-owned, so a direct
+    // writeToURL: here is fine at euid=501 (unlike the system gfx plist).
     NSError *err = nil;
     BOOL ok = [payload writeToURL:[NSURL fileURLWithPath:kAutoApplyBackupPath]
                             error:&err];
@@ -518,27 +567,10 @@ static const double kFactorMax = 1.5;
         @"GroupName":        @"wheel",
     };
 
-    // Preferred path: setuid(0) in main.m gives us euid=0, so NSFileManager
-    // writes to /Library/LaunchDaemons/ directly. chown / chmod are syscall
-    // calls, no spawn needed.
-    NSError *writeErr = nil;
-    BOOL direct = [daemon writeToURL:[NSURL fileURLWithPath:kAutoApplyDaemonPath]
-                                error:&writeErr];
-    if (direct) {
-        chown([kAutoApplyDaemonPath fileSystemRepresentation], 0, 0);
-        chmod([kAutoApplyDaemonPath fileSystemRepresentation], 0644);
-        struct stat st;
-        if (stat([kAutoApplyDaemonPath fileSystemRepresentation], &st) == 0 &&
-            st.st_uid == 0 && st.st_gid == 0 && (st.st_mode & 0777) == 0644) {
-            return YES;
-        }
-        NSLog(@"[TrollBox/Res] direct write stat drift — falling back to rootSpawn");
-    } else {
-        NSLog(@"[TrollBox/Res] direct write err=%@ — falling back to rootSpawn",
-              writeErr);
-    }
-
-    // Fallback: rootSpawn.
+    // Stage in tmp, cp -f via rootSpawn — same pattern as the gfx plist.
+    // Skip the previous "try direct writeToURL first" shortcut since it
+    // never succeeds at euid=501 and its failure path produced the
+    // misleading "root authorization" error.
     NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
                           @"com.trollbox.ressetter.plist"];
     if (![daemon writeToURL:[NSURL fileURLWithPath:tmpPath] error:outErr]) return NO;
@@ -564,11 +596,9 @@ static const double kFactorMax = 1.5;
 }
 
 - (void)removeAutoApplyDaemon {
-    const char *p = [kAutoApplyDaemonPath fileSystemRepresentation];
-    if (unlink(p) != 0 && access(p, F_OK) == 0) {
-        [CSProcessUtils rootSpawn:@"/bin/rm" args:@[@"-f", kAutoApplyDaemonPath]
-                           stdOut:NULL stdErr:NULL];
-    }
+    if (access([kAutoApplyDaemonPath fileSystemRepresentation], F_OK) != 0) return;
+    [CSProcessUtils rootSpawn:@"/bin/rm" args:@[@"-f", kAutoApplyDaemonPath]
+                       stdOut:NULL stdErr:NULL];
 }
 
 - (void)didToggleAutoApply:(UISwitch *)sw {

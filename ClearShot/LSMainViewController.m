@@ -75,6 +75,11 @@ static NSString * const kFavoritesKey = @"TBLocSimFavorites"; // array of
     self.mapView.delegate = self;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
+    // Blue dot for the real current position — the piece that was missing
+    // in 2.0.0/2.0.1 and that the user wanted visible permanently, in
+    // addition to the re-center button. Only takes effect once CoreLocation
+    // authorization is granted (user tapping re-center the first time).
+    self.mapView.showsUserLocation = YES;
     [self.view addSubview:self.mapView];
 
     // Long-press to drop a pin.
